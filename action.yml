@@ -52,6 +52,10 @@ inputs:
     description: 'Whether to cache the Tailscale binaries (Linux/macOS) or installer (Windows)'
     required: false
     default: 'false'
+  retries:
+    description: 'Number of retries for `tailscale up`'
+    required: false
+    default: '1'
 runs:
     using: 'composite'
     steps:
@@ -308,4 +312,30 @@ runs:
           if [ "${{ runner.os }}" != "Windows" ]; then
             MAYBE_SUDO="sudo -E"
           fi
-          timeout --verbose --kill-after=1s ${TIMEOUT} ${MAYBE_SUDO} tailscale up ${TAGS_ARG} --authkey=${TAILSCALE_AUTHKEY} --hostname=${HOSTNAME} --accept-routes ${ADDITIONAL_ARGS}
+
+          RETRIES=${{ inputs.retries }}
+
+          while [ $RETRIES -gt 0 ]; do
+            (timeout --verbose --kill-after=1s ${TIMEOUT} ${MAYBE_SUDO} tailscale up ${TAGS_ARG} --authkey=${TAILSCALE_AUTHKEY} --hostname=${HOSTNAME} --accept-routes ${ADDITIONAL_ARGS}) &
+            PID=$!
+            if wait $PID; then
+              STATUS=0  
+            else
+              STATUS=$?
+            fi
+            
+            if [ $STATUS -eq 0 ]; then
+              echo "Tailscale connected successfully."
+              break
+            fi
+            
+            echo "Tailscale is not connected, retrying... (status: $STATUS)"
+            sleep 5
+            RETRIES=$((RETRIES-1))
+          done
+          
+          # If we've exhausted all retries, fail
+          if [ $RETRIES -eq 0 ] && [ $STATUS -ne 0 ]; then
+            echo "Failed to connect to Tailscale after ${{ inputs.retries }} attempts"
+            exit 1
+          fi
